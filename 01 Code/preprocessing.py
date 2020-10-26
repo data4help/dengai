@@ -10,7 +10,6 @@ Created on Sat Oct 24 19:49:24 2020
 
 ### Packages
 import os
-import math
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -18,21 +17,16 @@ import random
 import pickle
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import seaborn as sns
 
-from statsmodels.tsa.stattools import adfuller, kpss
+from statsmodels.tsa.stattools import adfuller
 import pymannkendall as mk
 from statsmodels.tsa.seasonal import STL
 import statsmodels.api as sm
-from tbats import TBATS
 
-import scipy.stats as st
 from scipy import fft
 from scipy import signal as sig
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_absolute_error
-
 
 ### Paths
 main_path = r"/Users/paulmora/Documents/projects/dengal"
