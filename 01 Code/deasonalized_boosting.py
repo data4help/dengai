@@ -12,9 +12,17 @@ Created on Mon Oct 26 10:44:08 2020
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+
 import statsmodels.api as sm
+import scipy.stats as st
 from tbats import TBATS
+import copy
+
 from statsmodels.tsa.stattools import grangercausalitytests
+from sklearn import linear_model
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 
 # Paths
 main_path = r"/Users/paulmora/Documents/projects/dengai"
@@ -22,7 +30,7 @@ raw_path = r"{}/00 Raw".format(main_path)
 code_path = r"{}/01 Code".format(main_path)
 data_path = r"{}/02 Data".format(main_path)
 output_path = r"{}/03 Output".format(main_path)
-approach_method = "stl_arimax"
+approach_method = "deasonalized_boosting"
 
 # Loading the data
 preprocessed_data = pd.read_csv(r"{}/preprocessed_data.csv".format(data_path))
@@ -33,7 +41,29 @@ for city in cities:
     subset_data = preprocessed_data.loc[bool_city, :].reset_index(drop=True)
     data_dict[city] = subset_data
 
-# Initial feature names
+# %% Configurations
+
+#%%% Lasso model
+lasso_model_dict = {
+    # Lasso Regression
+    "model": linear_model.Lasso(random_state=28, fit_intercept=True),
+    "param": {
+        "alpha": [1e-8, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1, 10]
+        }
+    }
+
+gbr_model_dict = {
+    # Gradient Boosting Regressor
+        "model": GradientBoostingRegressor(random_state=28),
+        "param": {
+            "n_estimators": [1_000],
+            "learning_rate": [0.1, 0.2, 0.3],
+            "min_samples_split": [2, 5, 10, 15, 100],
+            "min_samples_leaf": [1, 2, 5, 10]
+        }
+    }
+
+#%%% Variable Names
 features = [
     'ndvi_ne',
     'ndvi_nw',
@@ -54,8 +84,7 @@ features = [
     'station_diur_temp_rng_c',
     'station_max_temp_c',
     'station_min_temp_c',
-    'station_precip_mm',
-    ]
+    'station_precip_mm']
 
 # %% Functions
 
@@ -73,7 +102,7 @@ def acf_plots(y, max_lags, city_name):
                 bbox_inches="tight")
 
 
-def tbats_deseasonalizing(y, periods):
+def tbats_deseasonalizing(y, periods, city_name):
 
     time_series = y.copy()
     estimator = TBATS(seasonal_periods=periods)
@@ -92,6 +121,10 @@ def tbats_deseasonalizing(y, periods):
         ax.tick_params(axis="both", labelsize=16)
 
     fig.tight_layout()
+    fig.savefig(r"{}/{}/{}_raw_acf.png".format(output_path,
+                                               approach_method,
+                                               city_name),
+                bbox_inches="tight")
 
     return deseasonalized_series, in_sample_seasonality
 
@@ -135,6 +168,24 @@ def lag_creation(y, data, features, lag_df):
                 lag_col = lagged_data.loc[:, col].shift(lag)
                 lagged_data.loc[:, "{}_{}".format(col, str(lag))] = lag_col
     return lagged_data
+
+
+def winsorizer(time_series, level, city_name):
+
+    decimal_level = level / 100
+    wind_series = st.mstats.winsorize(time_series, limits=[0, decimal_level])
+    fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(10, 10))
+    axs[0].plot(time_series, label="Original Time Series")
+    axs[1].plot(wind_series,
+                label="Winsorized at the {}% level".format(level))
+    axs = axs.ravel()
+    for axes in axs.ravel():
+        axes.legend(prop={"size": 16}, loc="upper right")
+        axes.tick_params(axis="both", labelsize=16)
+    fig.tight_layout()
+    fig.savefig(r"{}/{}_win.png".format(output_path, city_name),
+                bbox_inches="tight")
+    return wind_series
 
 
 def model_train(model_set, X, y, scoring, time_series=False,
@@ -189,62 +240,21 @@ def model_train(model_set, X, y, scoring, time_series=False,
     return model_info
 
 
-def lasso_column_finder(y, data, features):
+def lasso_column_finder(y_name, data, features):
 
     non_nan_data = data.dropna()
-    y = non_nan_data.loc[:, "total_cases"]
-    X = non_nan_data.loc[:, features]
+    y = non_nan_data.loc[:, y_name]
+    X = non_nan_data.drop(columns=["total_cases", y_name])
 
     lasso_model_info = model_train(**{"model_set": lasso_model_dict,
-                                      "X": X_data, "y": y,
+                                      "X": X, "y": y,
                                       "time_series": True,
                                       "standard_scaled": True,
                                       "minmax_scaled": False,
                                       "scoring": "neg_mean_absolute_error"})
     bool_non_null = lasso_model_info["model"].coef_ != 0
-    lasso_chosen_columns = list(X_data.columns[bool_non_null])
-
-
-def lasso_relevant_columns_finder(data):
-
-    not_needed_columns = ["city", "type", "index",
-                          "week_start_date", "year", "weekofyear"]
-    relevant_columns = list(set(data.columns) - set(not_needed_columns))
-    relevant_data = data.loc[:, relevant_columns]
-
-    no_nan_data = relevant_data.dropna()
-    X_data = no_nan_data.loc[:, [x for x in relevant_columns
-                                 if x != "total_cases"]]
-    y = no_nan_data.loc[:, "total_cases"]
-    lasso_model_info = model_train(**{"model_set": lasso_model_dict,
-                                      "X": X_data, "y": y,
-                                      "time_series": True,
-                                      "standard_scaled": True,
-                                      "minmax_scaled": False,
-                                      "scoring": "neg_mean_absolute_error"})
-    bool_non_null = lasso_model_info["model"].coef_ != 0
-    lasso_chosen_columns = list(X_data.columns[bool_non_null])
+    lasso_chosen_columns = list(X.columns[bool_non_null])
     return lasso_chosen_columns
-
-
-def acf_pacf_plots(time_series, nlags, city_name):
-
-    # Plotting results
-    no_nan_time_series = time_series.dropna()
-    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(20, 10), sharey=True)
-    sm.graphics.tsa.plot_acf(no_nan_time_series,
-                             lags=nlags, fft=True, ax=axs[0])
-    sm.graphics.tsa.plot_pacf(no_nan_time_series,
-                              lags=nlags, ax=axs[1])
-    for ax, title in zip(axs.ravel(), ["ACF", "PACF"]):
-        ax.tick_params(axis="both", labelsize=16)
-        ax.set_title(title, fontsize=18)
-        ax.set_title(title, fontsize=18)
-    fig.tight_layout()
-    fig.savefig(r"{}/{}/{}_acf_pacf.png".format(output_path,
-                                                approach_method,
-                                                city_name),
-                bbox_inches="tight")
 
 
 # %% Forecasting SJ
@@ -254,43 +264,68 @@ y = data.dropna().loc[:, "total_cases"]
 forecasting_length = sum(data.loc[:, "total_cases"].isna())
 year_in_weeks = 52
 
+acf_plots(y, year_in_weeks*4, "sj")
+deseasonalized_series, seasaonlity = tbats_deseasonalizing(y, [year_in_weeks],
+                                                           "sj")
+granger_df = granger_causality_finder(deseasonalized_series, data,
+                                      features, year_in_weeks)
+lagged_df = lag_creation(deseasonalized_series, data.copy(),
+                         features, granger_df)
+
+lagged_df.loc[:, "deseasonalized_series"] = deseasonalized_series
+lasso_columns = lasso_column_finder("deseasonalized_series",
+                                    lagged_df, features)
+
+"""
+Implement model training and potentially windsorize the data given
+the
+"""
 
 
-# %% Forecasting IQ
+no_nan_data = 
+X_data = lagged_df
+lasso_model_info = model_train(**{"model_set": gbr_model_dict,
+                                  "X": X, "y": y,
+                                  "time_series": True,
+                                  "standard_scaled": True,
+                                  "minmax_scaled": False,
+                                  "scoring": "neg_mean_absolute_error"})
 
-data = data_dict["iq"]
-y = data.dropna().loc[:, "total_cases"]
-forecasting_length = sum(data.loc[:, "total_cases"].isna())
+# # %% Forecasting IQ
 
-
-# %% Combining forecasts
-
-columns = ["city", "year", "weekofyear", "total_cases"]
-predictions_df = pd.DataFrame(columns=columns)
-
-for city, prediction in zip(["sj", "iq"], [sj_forecast, iq_forecast]):
-    data = data_dict[city].copy()
-    bool_target_nan = data.loc[:, "total_cases"].isna()
-    relevant_data = data.loc[bool_target_nan, columns]
-    rounded_preds = round(prediction).astype(int)
-    relevant_data.loc[:, "total_cases"] = rounded_preds.values
-    predictions_df = predictions_df.append(relevant_data)
-
-predictions_df = predictions_df.astype({"total_cases": int})
-predictions_df.to_csv("{}/{}/predictions.csv".format(output_path,
-                                                     approach_method),
-                      index=False)
-
-# Score: 28.5865
+# data = data_dict["iq"]
+# y = data.dropna().loc[:, "total_cases"]
+# forecasting_length = sum(data.loc[:, "total_cases"].isna())
 
 
+# # %% Combining forecasts
+
+# columns = ["city", "year", "weekofyear", "total_cases"]
+# predictions_df = pd.DataFrame(columns=columns)
+
+# for city, prediction in zip(["sj", "iq"], [sj_forecast, iq_forecast]):
+#     data = data_dict[city].copy()
+#     bool_target_nan = data.loc[:, "total_cases"].isna()
+#     relevant_data = data.loc[bool_target_nan, columns]
+#     rounded_preds = round(prediction).astype(int)
+#     relevant_data.loc[:, "total_cases"] = rounded_preds.values
+#     predictions_df = predictions_df.append(relevant_data)
+
+# predictions_df = predictions_df.astype({"total_cases": int})
+# predictions_df.to_csv("{}/{}/predictions.csv".format(output_path,
+#                                                      approach_method),
+#                       index=False)
+
+# # Score: 28.5865
 
 
-lagged_data = data.loc[:, features]
-lagged_data.loc[:, "total_cases"] = y
-for col in features:
-    num_lags = lag_df.loc[col, "sign_lags"]
-    if num_lags != 0:
-        for lag in range(1, num_lags+1):
-            lag_col = lagged_data.loc[:, col].shift(lag)
-            lagged_data.loc[:, "{}_{}".format(col, str(lag))] = lag_col
+
+
+# lagged_data = data.loc[:, features]
+# lagged_data.loc[:, "total_cases"] = y
+# for col in features:
+#     num_lags = lag_df.loc[col, "sign_lags"]
+#     if num_lags != 0:
+#         for lag in range(1, num_lags+1):
+#             lag_col = lagged_data.loc[:, col].shift(lag)
+#             lagged_data.loc[:, "{}_{}".format(col, str(lag))] = lag_col
