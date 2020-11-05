@@ -10,7 +10,11 @@ Created on Sat Oct 24 19:49:24 2020
 
 # Packages
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.stats as st
+
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.api import STLForecast
 import statsmodels.api as sm
@@ -61,29 +65,13 @@ features = [
 
 
 def acf_plots(y, max_lags, city_name):
-    fig, axs = plt.subplots(figsize=(20, 10))
+    fig, axs = plt.subplots(nrows=2, figsize=(20, 10))
     sm.graphics.tsa.plot_acf(y.values.squeeze(),
-                             lags=max_lags, ax=axs, missing="drop")
-    axs.set_title("Autocorrelation Plot", fontsize=18)
-    axs.tick_params(axis="both", labelsize=16)
-    fig.tight_layout()
-    fig.savefig(r"{}/{}/{}_raw_acf.png".format(output_path,
-                                               approach_method,
-                                               city_name),
-                bbox_inches="tight")
-
-
-def stl_decomposing(y, period, city_name):
-
-    time_series = y.copy()
-    res = STL(time_series, period=period, robust=True).fit()
-    fig, axs = plt.subplots(2, 1, figsize=(20, 20))
-    time_series.plot(ax=axs[0], label="Original Series", color="orange")
-    time_series_wo_season = time_series - res.seasonal
-    time_series_wo_season.plot(ax=axs[1],
-                               label="Original Series - Seasonality")
+                             lags=max_lags, ax=axs[1], missing="drop")
+    axs[1].set_title("Autocorrelation Plot", fontsize=18)
+    axs[0].set_title("Original Time Series", fontsize=18)
+    axs[0].plot(y)
     for ax in axs.ravel():
-        ax.legend(prop={"size": 18})
         ax.tick_params(axis="both", labelsize=16)
     fig.tight_layout()
     fig.savefig(r"{}/{}/{}_raw_acf.png".format(output_path,
@@ -91,7 +79,47 @@ def stl_decomposing(y, period, city_name):
                                                city_name),
                 bbox_inches="tight")
 
-    return res.resid
+
+def winsorizer(time_series, level, city_name):
+
+    decimal_level = level / 100
+    wind_series = st.mstats.winsorize(time_series, limits=[0, decimal_level])
+    fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(10, 10))
+    axs[0].plot(time_series, label="Original Time Series")
+    axs[1].plot(wind_series,
+                label="Winsorized at the {}% level".format(level))
+    axs = axs.ravel()
+    for axes in axs.ravel():
+        axes.legend(prop={"size": 16}, loc="upper right")
+        axes.tick_params(axis="both", labelsize=16)
+    fig.tight_layout()
+    fig.savefig(r"{}/{}/{}_win.png".format(output_path,
+                                           approach_method,
+                                           city_name),
+                bbox_inches="tight")
+    return wind_series
+
+
+def stl_decomposing(y, period, city_name):
+    time_series = y.copy()
+    res = STL(time_series, period=period, robust=True).fit()
+    fig, axs = plt.subplots(3, 1, figsize=(30, 20))
+    time_series.plot(ax=axs[0], label="Original Series")
+    time_series_wo_season = time_series - res.seasonal
+    res.seasonal.plot(ax=axs[1])
+    time_series_wo_season.plot(ax=axs[2])
+    axs[0].set_title("Original Series", fontsize=30)
+    axs[1].set_title("Seasonality", fontsize=30)
+    axs[2].set_title("Original Series Minus Seasonality", fontsize=30)
+    for ax in axs.ravel():
+        ax.tick_params(axis="both", labelsize=25)
+    fig.tight_layout()
+    fig.savefig(r"{}/{}/{}_decomposed_acf.png".format(output_path,
+                                                      approach_method,
+                                                      city_name),
+                bbox_inches="tight")
+
+    return time_series_wo_season
 
 
 def acf_pacf_plots(time_series, nlags, city_name):
@@ -114,6 +142,34 @@ def acf_pacf_plots(time_series, nlags, city_name):
                 bbox_inches="tight")
 
 
+def box_jenkins_lb_finder(y, p, q, year_in_weeks, city_name):
+    lb_df = pd.DataFrame(columns=["MA_{}".format(x) for x in range(1, q)],
+                         index=["AR_{}".format(x) for x in range(1, p)])
+    for i in range(1, p+1):
+        for j in range(1, q+1):
+            stlf = STLForecast(y, ARIMA, period=year_in_weeks, robust=True,
+                               model_kwargs=dict(order=(i, 0, j), trend="c"))
+            stlf_res = stlf.fit()
+            results_as_html = stlf_res.summary().tables[2].as_html()
+            results_df = pd.read_html(results_as_html, index_col=0)[0]
+            lb_df.loc["AR_{}".format(i),
+                      "MA_{}".format(j)] = results_df.iloc[0, 0]
+
+    # Create heatmaps out of all dataframes
+    fig, axs = plt.subplots(figsize=(20, 10))
+    sns.heatmap(lb_df.astype(float), annot=True, fmt=".2f",
+                ax=axs, annot_kws={"size": 18},
+                vmin=0.05,
+                vmax=0.25)
+    axs.set_xlabel("MA Terms", fontsize=20)
+    axs.set_ylabel("AR Terms", fontsize=20)
+    axs.tick_params(axis="both", labelsize=20)
+    fig.tight_layout()
+    fig.savefig(r"{}/{}/{}_lb_comp.png".format(output_path, approach_method,
+                                               city_name),
+                bbox_inches="tight")
+
+
 # %% Forecasting SJ
 
 data = data_dict["sj"]
@@ -122,27 +178,59 @@ forecasting_length = sum(data.loc[:, "total_cases"].isna())
 year_in_weeks = 52
 
 # Finding frequency
-acf_plots(y, year_in_weeks*4, "sj")
+acf_plots(y, year_in_weeks*12, "sj")
+
+# Winsorize
+masked_y = winsorizer(y, 2.5, "sj")
+win_y = pd.Series(np.ma.getdata(masked_y))
 
 # Creating decomposed series
-decomposed_series = stl_decomposing(y, year_in_weeks, "sj")
+seasonality = 104
+decomposed_series = stl_decomposing(win_y, seasonality, "sj")
 
 # Finding optimal ARMA specification
 acf_pacf_plots(decomposed_series, year_in_weeks, "sj")
-stlf = STLForecast(y, ARIMA, period=year_in_weeks, robust=True,
-                   model_kwargs=dict(order=(3, 0, 8), trend="c"))
-stlf_res = stlf.fit()
 
+# Comparing models
+p = 6
+q = 10
+box_jenkins_lb_finder(win_y, p, q, seasonality, "sj")
+
+# Specifying optimal model
+stlf = STLForecast(win_y, ARIMA, period=seasonality, robust=True,
+                   model_kwargs=dict(order=(3, 0, 1), trend="c"))
+stlf_res = stlf.fit()
+stlf_res.summary()
+
+# In sample predictions and residual plot
 sj_forecast = stlf_res.forecast(forecasting_length)
 sj_forecast[sj_forecast < 0] = 0
+in_sample = stlf_res.get_prediction(0, len(y),
+                                    dynamic=len(y)-260).summary_frame()
+
 fig, axs = plt.subplots(figsize=(20, 10))
-axs.plot(y, label="Actual Data")
-axs.plot(sj_forecast, label="Forecast")
+axs.scatter(list(range(len(y))), y, label="Actual Data", color="blue")
+axs.plot(in_sample.loc[:, "mean"]-10, label="In sample", color="red")
+axs.fill_between(in_sample.index,
+                 in_sample.loc[:, "mean_ci_lower"],
+                 in_sample.loc[:, "mean_ci_upper"],
+                 color="red", alpha=0.1)
+
+
+axs.plot(sj_forecast, label="Forecast", color="orange")
 axs.tick_params(axis="both", labelsize=16)
 axs.legend(prop={"size": 16})
 fig.tight_layout()
 fig.savefig(r"{}/sj_stl_arimax_forecast.png".format(output_path),
             bbox_inches="tight")
+
+predict.predicted_mean.loc['1977-07-01':].plot(ax=ax, style='r--', label='One-step-ahead forecast')
+ci = predict_ci.loc['1977-07-01':]
+ax.fill_between(ci.index, ci.iloc[:,0], ci.iloc[:,1], color='r', alpha=0.1)
+predict_dy.predicted_mean.loc['1977-07-01':].plot(ax=ax, style='g', label='Dynamic forecast (1978)')
+ci = predict_dy_ci.loc['1977-07-01':]
+ax.fill_between(ci.index, ci.iloc[:,0], ci.iloc[:,1], color='g', alpha=0.1)
+
 
 
 # %% Forecasting IQ
@@ -150,19 +238,30 @@ fig.savefig(r"{}/sj_stl_arimax_forecast.png".format(output_path),
 data = data_dict["iq"]
 y = data.dropna().loc[:, "total_cases"]
 forecasting_length = sum(data.loc[:, "total_cases"].isna())
+year_in_weeks = 52
 
 # Finding frequency
-acf_plots(y, year_in_weeks*4, "iq")
+acf_plots(y, year_in_weeks*8, "iq")
 
 # Creating decomposed series
-decomposed_series = stl_decomposing(y, year_in_weeks, "iq")
+seasonality = 52
+decomposed_series = stl_decomposing(y, seasonality, "iq")
 
 # Finding optimal ARMA specification
 acf_pacf_plots(decomposed_series, year_in_weeks, "iq")
-stlf = STLForecast(y, ARIMA, period=year_in_weeks, robust=True,
-                   model_kwargs=dict(order=(1, 0, 5), trend="ct"))
-stlf_res = stlf.fit()
 
+# Comparing models
+p = 3
+q = 9
+box_jenkins_lb_finder(y, p, q, seasonality, "iq")
+
+# Specifying optimal model
+stlf = STLForecast(y, ARIMA, period=seasonality, robust=True,
+                   model_kwargs=dict(order=(1, 0, 1), trend="c"))
+stlf_res = stlf.fit()
+print(stlf_res.summary())
+
+# In sample predictions and residual plot
 iq_forecast = stlf_res.forecast(forecasting_length)
 iq_forecast[iq_forecast < 0] = 0
 fig, axs = plt.subplots(figsize=(20, 10))
@@ -173,6 +272,7 @@ axs.legend(prop={"size": 16})
 fig.tight_layout()
 fig.savefig(r"{}/iq_stl_arimax_forecast.png".format(output_path),
             bbox_inches="tight")
+
 
 # %% Combining forecasts
 

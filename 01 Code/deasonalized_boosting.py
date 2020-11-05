@@ -43,7 +43,8 @@ for city in cities:
 
 # %% Configurations
 
-#%%% Lasso model
+#%%% Model specifications
+
 lasso_model_dict = {
     # Lasso Regression
     "model": linear_model.Lasso(random_state=28, fit_intercept=True),
@@ -60,6 +61,15 @@ gbr_model_dict = {
             "learning_rate": [0.1, 0.2, 0.3],
             "min_samples_split": [2, 5, 10, 15, 100],
             "min_samples_leaf": [1, 2, 5, 10]
+        }
+    }
+
+rfr_model_dict = {
+    # Gradient Boosting Regressor
+        "model": RandomForestRegressor(random_state=28),
+        "param": {
+            "n_estimators": [1_000],
+            "min_samples_split": [2, 5, 10, 15, 100],
         }
     }
 
@@ -276,20 +286,16 @@ lagged_df.loc[:, "deseasonalized_series"] = deseasonalized_series
 lasso_columns = lasso_column_finder("deseasonalized_series",
                                     lagged_df, features)
 
-"""
-Implement model training and potentially windsorize the data given
-the
-"""
-
-
-no_nan_data = 
-X_data = lagged_df
-lasso_model_info = model_train(**{"model_set": gbr_model_dict,
-                                  "X": X, "y": y,
-                                  "time_series": True,
-                                  "standard_scaled": True,
-                                  "minmax_scaled": False,
-                                  "scoring": "neg_mean_absolute_error"})
+non_nan_data = lagged_df.dropna()
+X_data = non_nan_data.loc[:, lasso_columns]
+y_data = non_nan_data.loc[:, "deseasonalized_series"]
+    
+rfr_model = model_train(**{"model_set": rfr_model_dict,
+                           "X": X_data, "y": y_data,
+                           "time_series": True,
+                           "standard_scaled": True,
+                           "minmax_scaled": False,
+                           "scoring": "neg_mean_absolute_error"})
 
 # # %% Forecasting IQ
 
